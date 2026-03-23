@@ -197,6 +197,11 @@ class Gabagool:
         if leg.last_buy_ts > 0 and (time.time() - leg.last_buy_ts) < DCA_COOLDOWN_SECS:
             return False
 
+        # FIX 4: Don't buy more than other_leg.buy_count + 1
+        # Prevents excess shares that create directional risk
+        if leg.buy_count > 0 and leg.buy_count > other_leg.buy_count + 1:
+            return False
+
         # FIX 3: Don't buy if other side is too expensive to ever form a pair
         # If other side ask > $0.55, pair_cost will be > $0.47+$0.55 = $1.02 — never profitable
         if not other_leg.has_position and other_ask > MAX_OPPOSITE_ASK:
@@ -331,14 +336,16 @@ class Gabagool:
                 excess = up.total_shares - down.total_shares
                 if resolved == "UP":
                     profit += (1.0 - up.avg_price) * excess
-                else:
+                elif resolved:  # resolved is known and it's DOWN
                     profit -= up.avg_price * excess
+                # else: resolved unknown (DRY) — don't penalize, excess = 50/50 coin flip
             elif down.total_shares > up.total_shares:
                 excess = down.total_shares - up.total_shares
                 if resolved == "DOWN":
                     profit += (1.0 - down.avg_price) * excess
-                else:
+                elif resolved:  # resolved is known and it's UP
                     profit -= down.avg_price * excess
+                # else: resolved unknown (DRY) — don't penalize
 
             total_pnl = round(profit, 2)
             emoji = "🎉" if total_pnl > 0 else "⚠️"
