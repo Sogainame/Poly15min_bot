@@ -20,6 +20,7 @@ from pathlib import Path
 
 from market import PolymarketClient, Book
 from notifier import send_telegram
+from redeemer import redeem_all
 
 WINDOW_SECS = 900  # 15 minutes
 DRY_RUN_BALANCE = 20.0
@@ -440,26 +441,16 @@ class Straddle:
 
         self._log_trade(outcome, total_pnl, up_pnl, down_pnl, resolved)
 
+        # Redeem any resolved positions (returns USDC to balance)
+        if not self.dry_run:
+            redeem_all()
+
     def _auto_sell_winner(self, leg: LegState) -> None:
-        """After resolution, sell winning tokens at $0.99 to recycle USDC."""
+        """After resolution, redeem winning tokens via Builder relayer."""
         if self.dry_run or leg.sold:
             return
-        time.sleep(3)
-        self.client.update_balance_allowance(leg.token_id)
-        time.sleep(1)
-        real_balance = self.client.get_token_balance(leg.token_id)
-        sell_size = round(int(real_balance * 10) / 10, 1)
-        if sell_size < 5.0:
-            print(f"[STRADDLE] ⚠ {leg.side} winner balance={real_balance:.2f} < 5 min — claim manually")
-            return
-        oid = self.client.submit_sell(
-            leg.token_id, EXPIRY_SELL_PRICE, sell_size,
-            f"STRADDLE-CLAIM-{leg.side}",
-        )
-        if oid:
-            print(f"[STRADDLE] 💰 Sold {leg.side} winner {sell_size:.1f}sh → USDC recycled")
-        else:
-            print(f"[STRADDLE] ⚠ Sell {leg.side} winner failed — claim manually")
+        # Redeem is handled by _try_redeem() after finalize
+        # No need to sell — redeem converts directly to USDC
 
     # ── CSV Logging ──────────────────────────────────────────────────────
 
