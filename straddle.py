@@ -469,29 +469,39 @@ class Straddle:
         if not s.entry_attempted and secs_in <= ENTRY_WINDOW_SECS:
             self._try_entry()
 
-        # Phase 2: Monitor take-profits
-        if s.up_leg.filled and not s.up_leg.sold:
-            self._check_tp(s.up_leg)
-        if s.down_leg.filled and not s.down_leg.sold:
-            self._check_tp(s.down_leg)
+        # Both legs sold — nothing to do, wait for next window
+        both_sold = s.up_leg.sold and s.down_leg.sold
 
-        # Heartbeat (every 15s)
-        if now - self._last_heartbeat_ts >= 15:
+        # Phase 2: Monitor take-profits (skip if both already sold)
+        if not both_sold:
+            if s.up_leg.filled and not s.up_leg.sold:
+                self._check_tp(s.up_leg)
+            if s.down_leg.filled and not s.down_leg.sold:
+                self._check_tp(s.down_leg)
+
+        # Heartbeat: every 15s while active, every 120s after both sold
+        heartbeat_interval = 120 if both_sold else 15
+        if now - self._last_heartbeat_ts >= heartbeat_interval:
             self._last_heartbeat_ts = now
 
             t_start = datetime.fromtimestamp(s.window_ts, timezone.utc).strftime("%H:%M")
             t_end = datetime.fromtimestamp(s.window_ts + WINDOW_SECS, timezone.utc).strftime("%H:%M")
 
-            up_status = "SOLD" if s.up_leg.sold else f"${self._current_bid(s.up_leg):.2f}" if s.up_leg.filled else "—"
-            down_status = "SOLD" if s.down_leg.sold else f"${self._current_bid(s.down_leg):.2f}" if s.down_leg.filled else "—"
+            if both_sold:
+                print(
+                    f"[STRADDLE] {t_start}-{t_end} T+{secs_in:.0f}s "
+                    f"✅ BOTH SOLD — waiting for next window T-{secs_left:.0f}s"
+                )
+            else:
+                up_status = "SOLD" if s.up_leg.sold else f"${self._current_bid(s.up_leg):.2f}" if s.up_leg.filled else "—"
+                down_status = "SOLD" if s.down_leg.sold else f"${self._current_bid(s.down_leg):.2f}" if s.down_leg.filled else "—"
+                entered_str = "✅" if s.up_leg.filled else "⏳" if not s.entry_attempted else "⛔"
 
-            entered_str = "✅" if s.up_leg.filled else "⏳" if not s.entry_attempted else "⛔"
-
-            print(
-                f"[STRADDLE] {t_start}-{t_end} T+{secs_in:.0f}s "
-                f"{entered_str} UP={up_status} DOWN={down_status} "
-                f"T-{secs_left:.0f}s"
-            )
+                print(
+                    f"[STRADDLE] {t_start}-{t_end} T+{secs_in:.0f}s "
+                    f"{entered_str} UP={up_status} DOWN={down_status} "
+                    f"T-{secs_left:.0f}s"
+                )
 
     def _current_bid(self, leg: LegState) -> float:
         """Quick bid check for heartbeat display (cached would be better)."""
