@@ -235,14 +235,15 @@ class Straddle:
                     self.client.cancel_order(down_oid)
                 return False
 
-        # Record leg state
+        # Record leg state (filled=False until verified for LIVE)
+        is_dry = self.dry_run
         s.up_leg = LegState(
             side="UP",
             token_id=s.up_token,
             entry_price=up_price,
             shares=self.shares,
             order_id=up_oid,
-            filled=True,  # GTC maker — assume fill for now
+            filled=is_dry,  # DRY=instant fill, LIVE=verify via API
             tp_target=round(up_price + self.take_profit, 2),
         )
         s.down_leg = LegState(
@@ -251,7 +252,7 @@ class Straddle:
             entry_price=down_price,
             shares=self.shares,
             order_id=down_oid,
-            filled=True,
+            filled=is_dry,
             tp_target=round(down_price + self.take_profit, 2),
         )
 
@@ -266,6 +267,23 @@ class Straddle:
             )
 
         return True
+
+    # ── Fill Verification ────────────────────────────────────────────────
+
+    def _check_fills(self) -> None:
+        """Poll order status to verify GTC maker buys actually filled."""
+        for leg in (self.state.up_leg, self.state.down_leg):
+            if leg.filled or not leg.order_id or leg.sold:
+                continue
+            status = self.client.get_order_status(leg.order_id)
+            if status in ("MATCHED", "FILLED", "CLOSED"):
+                leg.filled = True
+                # Set allowance right after confirmed fill
+                self.client.update_balance_allowance(leg.token_id)
+                print(f"[STRADDLE] ✅ {leg.side} order FILLED @ ${leg.entry_price:.2f}")
+            elif status == "CANCELLED":
+                print(f"[STRADDLE] ⚠ {leg.side} order CANCELLED — no position")
+                leg.order_id = None  # don't check again
 
     # ── Take-Profit Monitoring ───────────────────────────────────────────
 
@@ -490,6 +508,15 @@ class Straddle:
         if not s.entry_attempted and secs_in <= ENTRY_WINDOW_SECS:
             self._try_entry()
 
+        # Phase 1.5: Verify fills (LIVE only — polls order status)
+        if not self.dry_run and s.entry_attempted:
+            has_unfilled = (
+                (s.up_leg.order_id and not s.up_leg.filled)
+                or (s.down_leg.order_id and not s.down_leg.filled)
+            )
+            if has_unfilled:
+                self._check_fills()
+
         # Both legs sold — nothing to do, wait for next window
         both_sold = s.up_leg.sold and s.down_leg.sold
 
@@ -514,9 +541,9 @@ class Straddle:
                     f"✅ BOTH SOLD — waiting for next window T-{secs_left:.0f}s"
                 )
             else:
-                up_status = "SOLD" if s.up_leg.sold else f"${self._current_bid(s.up_leg):.2f}" if s.up_leg.filled else "—"
-                down_status = "SOLD" if s.down_leg.sold else f"${self._current_bid(s.down_leg):.2f}" if s.down_leg.filled else "—"
-                entered_str = "✅" if s.up_leg.filled else "⏳" if not s.entry_attempted else "⛔"
+                up_status = "SOLD" if s.up_leg.sold else f"${self._current_bid(s.up_leg):.2f}" if s.up_leg.filled else "PENDING" if s.up_leg.order_id else "—"
+                down_status = "SOLD" if s.down_leg.sold else f"${self._current_bid(s.down_leg):.2f}" if s.down_leg.filled else "PENDING" if s.down_leg.order_id else "—"
+                entered_str = "✅" if (s.up_leg.filled and s.down_leg.filled) else "⏳" if s.entry_attempted else "⏳"
 
                 print(
                     f"[STRADDLE] {t_start}-{t_end} T+{secs_in:.0f}s "

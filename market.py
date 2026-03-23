@@ -351,3 +351,27 @@ class PolymarketClient:
             self.clob.update_balance_allowance(params)
         except Exception:
             pass
+
+    def get_order_status(self, order_id: str) -> str:
+        """Check order status: LIVE, MATCHED, CANCELLED, etc."""
+        if self.clob is None:
+            return "UNKNOWN"
+        try:
+            resp = self.clob.get_order(order_id)
+            if isinstance(resp, dict):
+                return str(resp.get("status", "UNKNOWN")).upper()
+        except Exception:
+            pass
+        # Fallback: REST API
+        try:
+            r = self.http.get(
+                f"{CLOB_HOST}/order/{order_id}",
+                timeout=5.0,
+            )
+            if r.status_code == 200:
+                data = r.json()
+                if isinstance(data, dict):
+                    return str(data.get("status", "UNKNOWN")).upper()
+        except Exception:
+            pass
+        return "UNKNOWN"
