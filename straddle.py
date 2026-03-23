@@ -72,6 +72,7 @@ class WindowState:
     entry_attempted: bool = False
     market_found: bool = False
     finalized: bool = False
+    entry_ts: float = 0.0  # when orders were placed
 
 
 @dataclass
@@ -183,8 +184,8 @@ class Straddle:
         if sum_price > MAX_SUM_PRICE:
             return False
 
-        # Check balance
-        total_cost = (up_ask + down_ask) * self.shares
+        # Check balance (account for +$0.01 per side for faster fill)
+        total_cost = (min(up_ask + 0.01, 0.53) + min(down_ask + 0.01, 0.53)) * self.shares
         bal = self.client.get_balance()
         if self.dry_run and (bal is None or bal < total_cost):
             bal = DRY_RUN_BALANCE
@@ -196,10 +197,11 @@ class Straddle:
 
         s.entry_attempted = True
 
-        # Round prices to 2 decimal places
-        up_price = round(up_ask, 2)
-        down_price = round(down_ask, 2)
+        # Buy at ask + $0.01 for faster fill, cap at $0.53 per side
+        up_price = min(round(up_ask + 0.01, 2), 0.53)
+        down_price = min(round(down_ask + 0.01, 2), 0.53)
 
+        total_cost = (up_price + down_price) * self.shares
         print(
             f"\n[STRADDLE] 🎯 ENTRY: UP@${up_price:.2f} + DOWN@${down_price:.2f}"
             f" = ${up_price + down_price:.2f}/pair x {self.shares:.0f}sh"
@@ -223,12 +225,13 @@ class Straddle:
             )
             if not up_oid or not down_oid:
                 print(f"[STRADDLE] ❌ Entry failed — order(s) not placed")
-                # Cancel any placed order
                 if up_oid:
                     self.client.cancel_order(up_oid)
                 if down_oid:
                     self.client.cancel_order(down_oid)
                 return False
+
+        s.entry_ts = time.time()
 
         # Record leg state (filled=False until verified for LIVE)
         is_dry = self.dry_run
@@ -266,19 +269,27 @@ class Straddle:
     # ── Fill Verification ────────────────────────────────────────────────
 
     def _check_fills(self) -> None:
-        """Poll order status to verify GTC maker buys actually filled."""
-        for leg in (self.state.up_leg, self.state.down_leg):
+        """Poll order status to verify GTC maker buys actually filled.
+        Cancel unfilled orders after 30 seconds."""
+        s = self.state
+        elapsed = time.time() - s.entry_ts if s.entry_ts > 0 else 0
+
+        for leg in (s.up_leg, s.down_leg):
             if leg.filled or not leg.order_id or leg.sold:
                 continue
             status = self.client.get_order_status(leg.order_id)
             if status in ("MATCHED", "FILLED", "CLOSED"):
                 leg.filled = True
-                # Set allowance right after confirmed fill
                 self.client.update_balance_allowance(leg.token_id)
                 print(f"[STRADDLE] ✅ {leg.side} order FILLED @ ${leg.entry_price:.2f}")
             elif status == "CANCELLED":
-                print(f"[STRADDLE] ⚠ {leg.side} order CANCELLED — no position")
-                leg.order_id = None  # don't check again
+                print(f"[STRADDLE] ⚠ {leg.side} order CANCELLED")
+                leg.order_id = None
+            elif elapsed >= 30:
+                # 30s passed, not filled — cancel to free up balance
+                self.client.cancel_order(leg.order_id)
+                print(f"[STRADDLE] ⏰ {leg.side} not filled after 30s — cancelled")
+                leg.order_id = None
 
     # ── Take-Profit Monitoring ───────────────────────────────────────────
 
