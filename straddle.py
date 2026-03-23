@@ -31,13 +31,12 @@ CSV_DIR = Path("data/straddle")
 # ── Entry/exit parameters ────────────────────────────────────────────────────
 # Entry: buy both sides at market open (first 60 seconds)
 ENTRY_WINDOW_SECS = 60       # buy within first 60s of window
-MAX_ENTRY_PRICE = 0.55       # don't buy if token already > $0.55
-MIN_ENTRY_PRICE = 0.45       # don't buy if token < $0.45 (too skewed)
 MAX_ENTRY_SPREAD = 0.06      # skip if book spread > 6 cents
 MAX_SUM_PRICE = 1.06         # skip if UP+DOWN ask > $1.06 (too expensive)
+MAX_SKEW = 0.04              # skip if abs(UP - DOWN) > $0.04 (trending market)
 
 # Take-profit: sell when token reaches entry + TP
-TAKE_PROFIT = 0.04           # $0.04 per side (sell at ~$0.56)
+TAKE_PROFIT = 0.06           # $0.06 per side (sell at ~$0.56)
 
 # Auto-sell winner at expiry
 EXPIRY_SELL_PRICE = 0.99     # sell winning tokens at $0.99 after resolution
@@ -165,30 +164,23 @@ class Straddle:
 
         # Validation
         if up_ask <= 0 or down_ask <= 0:
-            print(f"[STRADDLE] ⚠ Empty book: UP ask={up_ask:.3f} DOWN ask={down_ask:.3f}")
             return False
 
         if up_book.spread > MAX_ENTRY_SPREAD or down_book.spread > MAX_ENTRY_SPREAD:
-            print(
-                f"[STRADDLE] ⚠ Wide spread: UP={up_book.spread:.3f} DOWN={down_book.spread:.3f}"
-            )
             return False
 
-        if up_ask > MAX_ENTRY_PRICE or down_ask > MAX_ENTRY_PRICE:
+        skew = abs(up_ask - down_ask)
+        if skew > MAX_SKEW:
             print(
-                f"[STRADDLE] ⚠ Price too high: UP={up_ask:.3f} DOWN={down_ask:.3f}"
+                f"[STRADDLE] ⛔ Skewed market: UP={up_ask:.2f} DOWN={down_ask:.2f}"
+                f" diff=${skew:.2f} > ${MAX_SKEW:.2f} — skip"
             )
-            return False
-
-        if up_ask < MIN_ENTRY_PRICE or down_ask < MIN_ENTRY_PRICE:
-            print(
-                f"[STRADDLE] ⚠ Price too low (skewed market): UP={up_ask:.3f} DOWN={down_ask:.3f}"
-            )
+            s.entry_attempted = True  # don't retry, this window is trending
+            self.stats.skipped += 1
             return False
 
         sum_price = up_ask + down_ask
         if sum_price > MAX_SUM_PRICE:
-            print(f"[STRADDLE] ⚠ Sum too high: ${sum_price:.3f} > ${MAX_SUM_PRICE:.2f}")
             return False
 
         # Check balance
@@ -198,6 +190,8 @@ class Straddle:
             bal = DRY_RUN_BALANCE
         if bal is not None and bal < total_cost + BALANCE_RESERVE:
             print(f"[STRADDLE] ⚠ Low balance: ${bal:.2f} < ${total_cost + BALANCE_RESERVE:.2f}")
+            s.entry_attempted = True  # don't spam every tick
+            self.stats.skipped += 1
             return False
 
         s.entry_attempted = True
@@ -575,8 +569,7 @@ class Straddle:
         print(f"  📊 BTC 15-Min Straddle Bot — {mode_label}")
         print(f"  Shares: {self.shares:.0f} per side | TP: ${self.take_profit:.2f}")
         print(f"  Entry window: first {ENTRY_WINDOW_SECS}s | Max sum: ${MAX_SUM_PRICE:.2f}")
-        print(f"  Entry price: [{MIN_ENTRY_PRICE:.2f}, {MAX_ENTRY_PRICE:.2f}]"
-              f" | Max spread: ${MAX_ENTRY_SPREAD:.2f}")
+        print(f"  Max skew: ${MAX_SKEW:.2f} | Max spread: ${MAX_ENTRY_SPREAD:.2f}")
         print(f"  Balance: {bal_s}")
         print(f"{'─' * 60}")
 
