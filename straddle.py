@@ -328,11 +328,7 @@ class Straddle:
             # Round down to 1 decimal (Polymarket tick) and ensure >= 5 (minimum order)
             sell_size = round(int(real_balance * 10) / 10, 1)
             if sell_size < 5.0:
-                # Not enough for minimum order — skip silently, will retry next tick
-                # (balance might increase after pending orders fill)
-                if leg.sell_attempts == 0:
-                    print(f"[STRADDLE] ⚠ {leg.side} balance={real_balance:.2f} < 5 min, waiting...")
-                    leg.sell_attempts = 1  # only print once
+                # Not enough for minimum order — will retry next tick
                 return False
 
             leg.sell_attempts += 1

@@ -19,8 +19,8 @@ from straddle import Straddle
 def main() -> None:
     parser = argparse.ArgumentParser(description="BTC 15-Min Straddle Bot")
     parser.add_argument("--live", action="store_true", help="Enable live trading")
-    parser.add_argument("--shares", type=float, default=10.0, help="Shares per side (default: 10)")
-    parser.add_argument("--tp", type=float, default=0.04, help="Take-profit per side in $ (default: 0.04)")
+    parser.add_argument("--shares", type=float, default=6.0, help="Shares per side (default: 6)")
+    parser.add_argument("--tp", type=float, default=0.06, help="Take-profit per side in $ (default: 0.06)")
     args = parser.parse_args()
 
     dry_run = not args.live
