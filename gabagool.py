@@ -128,6 +128,7 @@ class Gabagool:
         self.stats = Stats()
         self.running = False
         self._last_heartbeat_ts = 0.0
+        self._dry_balance = 100.0  # virtual balance for DRY simulation
         CSV_DIR.mkdir(parents=True, exist_ok=True)
 
     # ── Timing ───────────────────────────────────────────────────────────
@@ -210,8 +211,8 @@ class Gabagool:
         # Check balance
         cost = ask * self.shares
         bal = self.client.get_balance()
-        if self.dry_run and (bal is None or bal < cost):
-            bal = 20.0
+        if self.dry_run:
+            bal = self._dry_balance
         if bal is not None and bal < cost + BALANCE_RESERVE:
             return False
 
@@ -257,16 +258,21 @@ class Gabagool:
         leg.order_ids.append(oid or "")
         self.stats.buys += 1
 
+        # Deduct from virtual balance in DRY mode
+        if self.dry_run:
+            self._dry_balance -= buy_price * self.shares
+
         s = self.state
         pair_info = ""
         if s.up_leg.has_position and s.down_leg.has_position:
             pair_info = f" | pair_cost=${s.pair_cost:.3f} profit=${s.guaranteed_profit:+.2f}"
 
+        bal_str = f" | bal=${self._dry_balance:.2f}" if self.dry_run else ""
         print(
             f"[GABAGOOL] ✅ BUY {leg.side} #{leg.buy_count} @ ${buy_price:.2f}"
             f" x {self.shares:.0f}sh"
             f" | avg=${leg.avg_price:.3f} total=${leg.total_cost:.2f}"
-            f"{pair_info}"
+            f"{pair_info}{bal_str}"
         )
 
         if not self.dry_run:
@@ -369,14 +375,34 @@ class Gabagool:
 
         self.stats.pnl += total_pnl
 
+        # DRY mode: simulate resolution payout
+        # Complete pair: min_shares resolve to $1.00 each, excess depends on resolution
+        # Incomplete: winning side gets $1.00 per share, losing side gets $0
+        if self.dry_run:
+            if up.has_position and down.has_position:
+                min_sh = min(up.total_shares, down.total_shares)
+                self._dry_balance += min_sh * 1.0  # paired shares always pay $1
+                # Excess: in DRY we don't know resolution, assume 50/50 → return avg_price
+                # (conservative: you get your money back on average)
+                if up.total_shares > down.total_shares:
+                    self._dry_balance += (up.total_shares - min_sh) * up.avg_price
+                elif down.total_shares > up.total_shares:
+                    self._dry_balance += (down.total_shares - min_sh) * down.avg_price
+            elif up.has_position:
+                # 50/50 → return avg (conservative)
+                self._dry_balance += up.total_cost
+            elif down.has_position:
+                self._dry_balance += down.total_cost
+
         t_start = datetime.fromtimestamp(s.window_ts, timezone.utc).strftime("%H:%M")
+        bal_str = f" | bal=${self._dry_balance:.2f}" if self.dry_run else ""
         print(
             f"\n[GABAGOOL] {emoji} {outcome} @ {t_start}"
             f" | UP: {up.buy_count}buys avg=${up.avg_price:.3f}"
             f" | DOWN: {down.buy_count}buys avg=${down.avg_price:.3f}"
             f" | pair=${s.pair_cost:.3f}"
             f" | resolved={resolved or '?'}"
-            f" | PnL=${total_pnl:+.2f}"
+            f" | PnL=${total_pnl:+.2f}{bal_str}"
         )
         print(
             f"[GABAGOOL] 📊 Complete={self.stats.complete}"
@@ -487,7 +513,10 @@ class Gabagool:
     def run(self) -> None:
         mode_label = "LIVE" if not self.dry_run else "DRY"
         bal = self.client.get_balance()
-        bal_s = f"${bal:.2f}" if bal else "n/a"
+        if self.dry_run:
+            bal_s = f"${self._dry_balance:.2f} (virtual)"
+        else:
+            bal_s = f"${bal:.2f}" if bal else "n/a"
 
         print(f"\n{'─' * 60}")
         print(f"  🍝 Gabagool Spread Capture — {mode_label}")
