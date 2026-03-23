@@ -1,9 +1,14 @@
-"""BTC 15-Minute Straddle Bot — Entry Point.
+"""BTC 15-Minute Bot — Entry Point.
+
+Strategies:
+  straddle  — buy both sides at open, TP on oscillation (original)
+  gabagool  — asymmetric spread capture, buy each side when cheap (new)
 
 Usage:
-    python bot.py                     # DRY RUN (safe, no real orders)
-    python bot.py --live              # LIVE (real money!)
-    python bot.py --live --shares 6   # LIVE with 6 shares per side
+    python bot.py                              # DRY gabagool (default)
+    python bot.py --live                       # LIVE gabagool
+    python bot.py --strategy straddle --live   # LIVE straddle
+    python bot.py --live --threshold 0.47      # gabagool with custom buy threshold
 """
 from __future__ import annotations
 
@@ -12,13 +17,18 @@ import signal
 import sys
 
 from market import PolymarketClient
-from straddle import Straddle
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BTC 15-Min Straddle Bot")
+    parser = argparse.ArgumentParser(description="BTC 15-Min Bot")
     parser.add_argument("--live", action="store_true", help="Enable live trading")
-    parser.add_argument("--shares", type=float, default=6.0, help="Shares per side (default: 6)")
+    parser.add_argument("--shares", type=float, default=6.0, help="Shares per buy (default: 6)")
+    parser.add_argument("--strategy", choices=["gabagool", "straddle"], default="gabagool",
+                        help="Strategy: gabagool (spread capture) or straddle (TP on oscillation)")
+    parser.add_argument("--threshold", type=float, default=0.47,
+                        help="Gabagool: buy when ask ≤ this (default: 0.47)")
+    parser.add_argument("--max-pair", type=float, default=0.97,
+                        help="Gabagool: max pair cost (default: 0.97)")
     args = parser.parse_args()
 
     dry_run = not args.live
@@ -28,11 +38,23 @@ def main() -> None:
         print("    Press Ctrl+C to stop.\n")
 
     client = PolymarketClient()
-    bot = Straddle(
-        client=client,
-        dry_run=dry_run,
-        shares=args.shares,
-    )
+
+    if args.strategy == "gabagool":
+        from gabagool import Gabagool
+        bot = Gabagool(
+            client=client,
+            dry_run=dry_run,
+            shares=args.shares,
+            buy_threshold=args.threshold,
+            max_pair_cost=args.max_pair,
+        )
+    else:
+        from straddle import Straddle
+        bot = Straddle(
+            client=client,
+            dry_run=dry_run,
+            shares=args.shares,
+        )
 
     def on_exit(sig, frame):
         print(f"\n\n{'─' * 60}")
