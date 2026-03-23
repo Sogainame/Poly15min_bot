@@ -325,10 +325,15 @@ class Straddle:
 
             # Get real token balance — Polymarket fee means we have less than requested
             real_balance = self.client.get_token_balance(leg.token_id)
-            # Round down to 1 decimal (Polymarket tick) and ensure >= 5 (minimum order)
-            sell_size = round(int(real_balance * 10) / 10, 1)
-            if sell_size < 5.0:
-                # Not enough for minimum order — will retry next tick
+            # Sell exactly 5.0 if we have enough (min order = 5)
+            # Buying 6 shares gives ~5.95 after fee — always enough
+            if real_balance >= 5.0:
+                sell_size = 5.0
+            else:
+                # Less than 5 — can't sell, will redeem after expiry
+                if leg.sell_attempts == 0:
+                    print(f"[STRADDLE] ⚠ {leg.side} balance={real_balance:.2f} < 5 — will redeem after expiry")
+                    leg.sell_attempts = 1
                 return False
 
             leg.sell_attempts += 1

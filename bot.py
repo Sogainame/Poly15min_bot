@@ -3,8 +3,8 @@
 Usage:
     python bot.py                     # DRY RUN (safe, no real orders)
     python bot.py --live              # LIVE (real money!)
-    python bot.py --live --shares 5   # LIVE with 5 shares per side
-    python bot.py --tp 0.05           # Custom take-profit ($0.05)
+    python bot.py --live --shares 6   # LIVE with 6 shares per side
+    python bot.py --tp 0.06           # Custom take-profit ($0.06)
 """
 from __future__ import annotations
 
