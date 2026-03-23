@@ -375,3 +375,20 @@ class PolymarketClient:
         except Exception:
             pass
         return "UNKNOWN"
+
+    def get_token_balance(self, token_id: str) -> float:
+        """Get actual conditional token balance (in shares, not raw units)."""
+        if self.clob is None or BalanceAllowanceParams is None or AssetType is None:
+            return 0.0
+        try:
+            params = BalanceAllowanceParams(
+                asset_type=AssetType.CONDITIONAL,
+                token_id=token_id,
+            )
+            resp = self.clob.get_balance_allowance(params)
+            if isinstance(resp, dict):
+                raw = self._to_float(resp.get("balance", 0))
+                return raw / 1e6 if raw > 10_000 else raw
+        except Exception:
+            pass
+        return 0.0

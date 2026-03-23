@@ -291,8 +291,6 @@ class Straddle:
         """Check if a leg has hit its take-profit target."""
         if not leg.filled or leg.sold or not leg.token_id:
             return False
-        if leg.sell_attempts >= 5:
-            return False  # stop trying, will resolve at expiry
 
         book = self.client.fetch_book(leg.token_id)
         bid = book.best_bid
@@ -301,9 +299,9 @@ class Straddle:
 
         if bid >= leg.tp_target:
             sell_price = min(round(bid, 2), 0.99)
-            profit = (sell_price - leg.entry_price) * leg.shares
 
             if self.dry_run:
+                profit = (sell_price - leg.entry_price) * leg.shares
                 print(
                     f"\n[STRADDLE] 💰 TP HIT: {leg.side} @ ${sell_price:.2f}"
                     f" (entry ${leg.entry_price:.2f}) +${profit:.2f}"
@@ -317,32 +315,42 @@ class Straddle:
             if not leg.allowance_set:
                 self.client.update_balance_allowance(leg.token_id)
                 leg.allowance_set = True
-                import time as _t; _t.sleep(1)  # let allowance propagate
+                import time as _t; _t.sleep(1)
+
+            # Get real token balance — Polymarket fee means we have less than requested
+            real_balance = self.client.get_token_balance(leg.token_id)
+            # Round down to 1 decimal (Polymarket tick) and ensure >= 5 (minimum order)
+            sell_size = round(int(real_balance * 10) / 10, 1)
+            if sell_size < 5.0:
+                # Not enough for minimum order — skip silently, will retry next tick
+                # (balance might increase after pending orders fill)
+                if leg.sell_attempts == 0:
+                    print(f"[STRADDLE] ⚠ {leg.side} balance={real_balance:.2f} < 5 min, waiting...")
+                    leg.sell_attempts = 1  # only print once
+                return False
 
             leg.sell_attempts += 1
+            profit = (sell_price - leg.entry_price) * sell_size
             print(
                 f"\n[STRADDLE] 💰 TP HIT: {leg.side} @ ${sell_price:.2f}"
-                f" (entry ${leg.entry_price:.2f}) +${profit:.2f}"
-                f" [attempt {leg.sell_attempts}/5]"
+                f" x {sell_size:.1f}sh (entry ${leg.entry_price:.2f}) +${profit:.2f}"
             )
 
             oid = self.client.submit_sell(
-                leg.token_id, sell_price, leg.shares,
+                leg.token_id, sell_price, sell_size,
                 f"STRADDLE-TP-{leg.side}",
             )
             if not oid:
-                if leg.sell_attempts < 5:
-                    print(f"[STRADDLE] ⚠ Sell failed for {leg.side}, will retry")
-                else:
-                    print(f"[STRADDLE] ❌ Sell failed for {leg.side} after 5 attempts — holding to expiry")
+                print(f"[STRADDLE] ⚠ Sell failed for {leg.side}, will retry")
                 return False
 
             leg.sell_order_id = oid
             leg.sold = True
             leg.sell_price = sell_price
+            leg.shares = sell_size  # update to actual sold amount
             send_telegram(
                 f"💰 TP HIT: {leg.side} @ ${sell_price:.2f}"
-                f" (+${profit:.2f})"
+                f" x {sell_size:.1f}sh (+${profit:.2f})"
             )
             return True
         return False
@@ -438,12 +446,18 @@ class Straddle:
             return
         time.sleep(3)
         self.client.update_balance_allowance(leg.token_id)
+        time.sleep(1)
+        real_balance = self.client.get_token_balance(leg.token_id)
+        sell_size = round(int(real_balance * 10) / 10, 1)
+        if sell_size < 5.0:
+            print(f"[STRADDLE] ⚠ {leg.side} winner balance={real_balance:.2f} < 5 min — claim manually")
+            return
         oid = self.client.submit_sell(
-            leg.token_id, EXPIRY_SELL_PRICE, leg.shares,
+            leg.token_id, EXPIRY_SELL_PRICE, sell_size,
             f"STRADDLE-CLAIM-{leg.side}",
         )
         if oid:
-            print(f"[STRADDLE] 💰 Sold {leg.side} winner → USDC recycled")
+            print(f"[STRADDLE] 💰 Sold {leg.side} winner {sell_size:.1f}sh → USDC recycled")
         else:
             print(f"[STRADDLE] ⚠ Sell {leg.side} winner failed — claim manually")
 
