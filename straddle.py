@@ -35,8 +35,9 @@ MAX_ENTRY_SPREAD = 0.06      # skip if book spread > 6 cents
 MAX_SUM_PRICE = 1.06         # skip if UP+DOWN ask > $1.06 (too expensive)
 MAX_SKEW = 0.04              # skip if abs(UP - DOWN) > $0.04 (trending market)
 
-# Take-profit: sell when token reaches entry + TP
-TAKE_PROFIT = 0.06           # $0.06 per side (sell at ~$0.56)
+# Take-profit: first leg hits $0.08, then second leg reduced to $0.05
+TAKE_PROFIT_FIRST = 0.08     # first leg TP (entry + $0.08)
+TAKE_PROFIT_SECOND = 0.05    # second leg TP after first sells (entry + $0.05)
 
 # Auto-sell winner at expiry
 EXPIRY_SELL_PRICE = 0.99     # sell winning tokens at $0.99 after resolution
@@ -91,13 +92,11 @@ class Straddle:
         self,
         client: PolymarketClient,
         dry_run: bool = True,
-        shares: float = 10.0,
-        take_profit: float = TAKE_PROFIT,
+        shares: float = 6.0,
     ) -> None:
         self.client = client
         self.dry_run = dry_run
         self.shares = shares
-        self.take_profit = take_profit
         self.state = WindowState()
         self.stats = Stats()
         self.running = False
@@ -242,7 +241,7 @@ class Straddle:
             shares=self.shares,
             order_id=up_oid,
             filled=is_dry,  # DRY=instant fill, LIVE=verify via API
-            tp_target=round(up_price + self.take_profit, 2),
+            tp_target=round(up_price + TAKE_PROFIT_FIRST, 2),
         )
         s.down_leg = LegState(
             side="DOWN",
@@ -251,7 +250,7 @@ class Straddle:
             shares=self.shares,
             order_id=down_oid,
             filled=is_dry,
-            tp_target=round(down_price + self.take_profit, 2),
+            tp_target=round(down_price + TAKE_PROFIT_FIRST, 2),
         )
 
         self.stats.entered += 1
@@ -475,7 +474,8 @@ class Straddle:
             "down_entry": round(s.down_leg.entry_price, 2),
             "sum_entry": round(s.up_leg.entry_price + s.down_leg.entry_price, 2),
             "shares": round(self.shares, 0),
-            "tp": self.take_profit,
+            "tp_first": TAKE_PROFIT_FIRST,
+            "tp_second": TAKE_PROFIT_SECOND,
             "up_sold": int(s.up_leg.sold),
             "up_sell_price": round(s.up_leg.sell_price, 2) if s.up_leg.sold else "",
             "down_sold": int(s.down_leg.sold),
@@ -538,6 +538,18 @@ class Straddle:
             if s.down_leg.filled and not s.down_leg.sold:
                 self._check_tp(s.down_leg)
 
+            # After first leg sells → reduce TP on second leg
+            if s.up_leg.sold and not s.down_leg.sold and s.down_leg.filled:
+                reduced = round(s.down_leg.entry_price + TAKE_PROFIT_SECOND, 2)
+                if s.down_leg.tp_target != reduced:
+                    s.down_leg.tp_target = reduced
+                    print(f"[STRADDLE] 📉 DOWN TP reduced to ${reduced:.2f} (entry+${TAKE_PROFIT_SECOND:.2f})")
+            if s.down_leg.sold and not s.up_leg.sold and s.up_leg.filled:
+                reduced = round(s.up_leg.entry_price + TAKE_PROFIT_SECOND, 2)
+                if s.up_leg.tp_target != reduced:
+                    s.up_leg.tp_target = reduced
+                    print(f"[STRADDLE] 📉 UP TP reduced to ${reduced:.2f} (entry+${TAKE_PROFIT_SECOND:.2f})")
+
         # Heartbeat: every 15s while active, every 120s after both sold
         heartbeat_interval = 120 if both_sold else 15
         if now - self._last_heartbeat_ts >= heartbeat_interval:
@@ -579,10 +591,10 @@ class Straddle:
 
         print(f"\n{'─' * 60}")
         print(f"  📊 BTC 15-Min Straddle Bot — {mode_label}")
-        print(f"  Shares: {self.shares:.0f} per side | TP: ${self.take_profit:.2f}")
-        print(f"  Entry window: first {ENTRY_WINDOW_SECS}s | Max sum: ${MAX_SUM_PRICE:.2f}")
-        print(f"  Max skew: ${MAX_SKEW:.2f} | Max spread: ${MAX_ENTRY_SPREAD:.2f}")
-        print(f"  Balance: {bal_s}")
+        print(f"  Shares: {self.shares:.0f} per side | TP1: ${TAKE_PROFIT_FIRST:.2f} → TP2: ${TAKE_PROFIT_SECOND:.2f}")
+        print(f"  Entry: ask+$0.01 (cap $0.53) | Max skew: ${MAX_SKEW:.2f}")
+        print(f"  Max spread: ${MAX_ENTRY_SPREAD:.2f} | Max sum: ${MAX_SUM_PRICE:.2f}")
+        print(f"  Cancel unfilled: 30s | Balance: {bal_s}")
         print(f"{'─' * 60}")
 
         self.running = True
