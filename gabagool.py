@@ -36,8 +36,11 @@ MAX_PAIR_COST = 0.97       # never let combined avg cost exceed this
 MAX_SINGLE_PRICE = 0.53    # never buy a side above this price
 MIN_SHARES = 6             # minimum per buy (5 after fee = sellable)
 STOP_BUY_SECS = 600        # stop buying after 10 min into window (5 min buffer)
-MAX_BUYS_PER_SIDE = 3      # max DCA entries per side per window
+MAX_BUYS_PER_SIDE = 2      # max DCA entries per side per window (was 3)
 BALANCE_RESERVE = 1.00     # keep $1 in reserve
+DCA_COOLDOWN_SECS = 60     # min seconds between buys on same side
+MAX_SINGLE_SIDE_PCT = 0.50 # never spend more than 50% of balance on one side
+MAX_OPPOSITE_ASK = 0.55    # don't buy if other side ask > this (no chance of pair)
 
 
 @dataclass
@@ -49,6 +52,7 @@ class LegPosition:
     total_cost: float = 0.0    # total USD spent
     buy_count: int = 0
     order_ids: list[str] = field(default_factory=list)
+    last_buy_ts: float = 0.0   # timestamp of last buy (for DCA cooldown)
 
     @property
     def avg_price(self) -> float:
@@ -164,9 +168,16 @@ class Gabagool:
 
     # ── Core: Should We Buy This Side? ───────────────────────────────────
 
-    def _should_buy(self, leg: LegPosition, ask: float, other_leg: LegPosition) -> bool:
-        """Decide whether to buy more shares on this side."""
-        # Price too high
+    def _should_buy(self, leg: LegPosition, ask: float,
+                    other_leg: LegPosition, other_ask: float) -> bool:
+        """Decide whether to buy more shares on this side.
+
+        Three new safety rules (from first live test failure):
+        1. DCA cooldown: min 60s between buys on same side
+        2. Balance reserve: never spend >50% of balance on one side
+        3. Opposite ask check: don't buy if other side is too expensive to pair
+        """
+        # Price too high or zero
         if ask > MAX_SINGLE_PRICE or ask <= 0:
             return False
 
@@ -182,6 +193,15 @@ class Gabagool:
         if ask > self.buy_threshold:
             return False
 
+        # FIX 1: DCA cooldown — no spam buying
+        if leg.last_buy_ts > 0 and (time.time() - leg.last_buy_ts) < DCA_COOLDOWN_SECS:
+            return False
+
+        # FIX 3: Don't buy if other side is too expensive to ever form a pair
+        # If other side ask > $0.55, pair_cost will be > $0.47+$0.55 = $1.02 — never profitable
+        if not other_leg.has_position and other_ask > MAX_OPPOSITE_ASK:
+            return False
+
         # Check balance
         cost = ask * self.shares
         bal = self.client.get_balance()
@@ -190,9 +210,15 @@ class Gabagool:
         if bal is not None and bal < cost + BALANCE_RESERVE:
             return False
 
+        # FIX 2: Never spend more than 50% of total balance on one side
+        # Reserve the rest for the second leg
+        if bal is not None and not other_leg.has_position:
+            max_on_one_side = bal * MAX_SINGLE_SIDE_PCT
+            if leg.total_cost + cost > max_on_one_side:
+                return False
+
         # KEY RULE: would this purchase push pair_cost above max?
         if other_leg.has_position:
-            # Simulate new average
             new_shares = leg.total_shares + self.shares
             new_cost = leg.total_cost + (ask * self.shares)
             new_avg = new_cost / new_shares
@@ -222,6 +248,7 @@ class Gabagool:
         leg.total_shares += self.shares
         leg.total_cost += buy_price * self.shares
         leg.buy_count += 1
+        leg.last_buy_ts = time.time()  # for DCA cooldown
         leg.order_ids.append(oid or "")
         self.stats.buys += 1
 
@@ -261,12 +288,14 @@ class Gabagool:
 
         # Try to buy cheaper side first (better deal)
         if up_ask <= down_ask:
-            sides = [(s.up_leg, up_ask, s.down_leg), (s.down_leg, down_ask, s.up_leg)]
+            sides = [(s.up_leg, up_ask, s.down_leg, down_ask),
+                     (s.down_leg, down_ask, s.up_leg, up_ask)]
         else:
-            sides = [(s.down_leg, down_ask, s.up_leg), (s.up_leg, up_ask, s.down_leg)]
+            sides = [(s.down_leg, down_ask, s.up_leg, up_ask),
+                     (s.up_leg, up_ask, s.down_leg, down_ask)]
 
-        for leg, ask, other in sides:
-            if self._should_buy(leg, ask, other):
+        for leg, ask, other, other_ask in sides:
+            if self._should_buy(leg, ask, other, other_ask):
                 self._buy_leg(leg, ask)
 
     # ── Window Finalization ──────────────────────────────────────────────
@@ -457,6 +486,8 @@ class Gabagool:
         print(f"  🍝 Gabagool Spread Capture — {mode_label}")
         print(f"  Buy when ask ≤ ${self.buy_threshold:.2f} | Max pair cost: ${self.max_pair_cost:.2f}")
         print(f"  Shares per buy: {self.shares:.0f} | Max buys/side: {MAX_BUYS_PER_SIDE}")
+        print(f"  DCA cooldown: {DCA_COOLDOWN_SECS}s | Max opposite ask: ${MAX_OPPOSITE_ASK:.2f}")
+        print(f"  Max single side: {MAX_SINGLE_SIDE_PCT*100:.0f}% of balance")
         print(f"  Stop buying after: {STOP_BUY_SECS}s | Balance: {bal_s}")
         print(f"{'─' * 60}")
 
