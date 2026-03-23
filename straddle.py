@@ -55,6 +55,8 @@ class LegState:
     sell_price: float = 0.0
     sell_order_id: str | None = None
     tp_target: float = 0.0    # entry_price + TAKE_PROFIT
+    sell_attempts: int = 0
+    allowance_set: bool = False
 
 
 @dataclass
@@ -271,6 +273,8 @@ class Straddle:
         """Check if a leg has hit its take-profit target."""
         if not leg.filled or leg.sold or not leg.token_id:
             return False
+        if leg.sell_attempts >= 5:
+            return False  # stop trying, will resolve at expiry
 
         book = self.client.fetch_book(leg.token_id)
         bid = book.best_bid
@@ -280,31 +284,48 @@ class Straddle:
         if bid >= leg.tp_target:
             sell_price = min(round(bid, 2), 0.99)
             profit = (sell_price - leg.entry_price) * leg.shares
+
+            if self.dry_run:
+                print(
+                    f"\n[STRADDLE] 💰 TP HIT: {leg.side} @ ${sell_price:.2f}"
+                    f" (entry ${leg.entry_price:.2f}) +${profit:.2f}"
+                )
+                leg.sell_order_id = f"DRY-SELL-{leg.side}"
+                leg.sold = True
+                leg.sell_price = sell_price
+                return True
+
+            # LIVE: set allowance before first sell attempt
+            if not leg.allowance_set:
+                self.client.update_balance_allowance(leg.token_id)
+                leg.allowance_set = True
+                import time as _t; _t.sleep(1)  # let allowance propagate
+
+            leg.sell_attempts += 1
             print(
                 f"\n[STRADDLE] 💰 TP HIT: {leg.side} @ ${sell_price:.2f}"
                 f" (entry ${leg.entry_price:.2f}) +${profit:.2f}"
+                f" [attempt {leg.sell_attempts}/5]"
             )
 
-            if self.dry_run:
-                leg.sell_order_id = f"DRY-SELL-{leg.side}"
-            else:
-                oid = self.client.submit_sell(
-                    leg.token_id, sell_price, leg.shares,
-                    f"STRADDLE-TP-{leg.side}",
-                )
-                if not oid:
-                    print(f"[STRADDLE] ⚠ Sell failed for {leg.side}")
-                    return False
-                leg.sell_order_id = oid
+            oid = self.client.submit_sell(
+                leg.token_id, sell_price, leg.shares,
+                f"STRADDLE-TP-{leg.side}",
+            )
+            if not oid:
+                if leg.sell_attempts < 5:
+                    print(f"[STRADDLE] ⚠ Sell failed for {leg.side}, will retry")
+                else:
+                    print(f"[STRADDLE] ❌ Sell failed for {leg.side} after 5 attempts — holding to expiry")
+                return False
 
+            leg.sell_order_id = oid
             leg.sold = True
             leg.sell_price = sell_price
-
-            if not self.dry_run:
-                send_telegram(
-                    f"💰 TP HIT: {leg.side} @ ${sell_price:.2f}"
-                    f" (+${profit:.2f})"
-                )
+            send_telegram(
+                f"💰 TP HIT: {leg.side} @ ${sell_price:.2f}"
+                f" (+${profit:.2f})"
+            )
             return True
         return False
 
