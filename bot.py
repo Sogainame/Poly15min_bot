@@ -1,14 +1,15 @@
 """BTC 15-Minute Bot — Entry Point.
 
 Strategies:
-  straddle  — buy both sides at open, TP on oscillation (original)
-  gabagool  — asymmetric spread capture, buy each side when cheap (new)
+  dump_hedge — wait for dump, buy cheap, hedge when sum ≤ target (recommended)
+  gabagool   — asymmetric spread capture (legacy)
+  straddle   — buy both sides at open, TP on oscillation (legacy)
 
 Usage:
-    python bot.py                              # DRY gabagool (default)
-    python bot.py --live                       # LIVE gabagool
-    python bot.py --strategy straddle --live   # LIVE straddle
-    python bot.py --live --threshold 0.47      # gabagool with custom buy threshold
+    python bot.py                              # DRY dump_hedge (default)
+    python bot.py --live                       # LIVE dump_hedge
+    python bot.py --strategy gabagool --live   # LIVE gabagool
+    python bot.py --live --sum-target 0.93     # custom sum target
 """
 from __future__ import annotations
 
@@ -23,8 +24,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="BTC 15-Min Bot")
     parser.add_argument("--live", action="store_true", help="Enable live trading")
     parser.add_argument("--shares", type=float, default=6.0, help="Shares per buy (default: 6)")
-    parser.add_argument("--strategy", choices=["gabagool", "straddle"], default="gabagool",
-                        help="Strategy: gabagool (spread capture) or straddle (TP on oscillation)")
+    parser.add_argument("--strategy", choices=["dump_hedge", "gabagool", "straddle"],
+                        default="dump_hedge",
+                        help="Strategy (default: dump_hedge)")
+    parser.add_argument("--sum-target", type=float, default=0.95,
+                        help="Dump hedge: max combined cost (default: 0.95)")
     parser.add_argument("--threshold", type=float, default=0.47,
                         help="Gabagool: buy when ask ≤ this (default: 0.47)")
     parser.add_argument("--max-pair", type=float, default=0.97,
@@ -39,7 +43,15 @@ def main() -> None:
 
     client = PolymarketClient()
 
-    if args.strategy == "gabagool":
+    if args.strategy == "dump_hedge":
+        from dump_hedge import DumpHedge
+        bot = DumpHedge(
+            client=client,
+            dry_run=dry_run,
+            shares=args.shares,
+            sum_target=args.sum_target,
+        )
+    elif args.strategy == "gabagool":
         from gabagool import Gabagool
         bot = Gabagool(
             client=client,
