@@ -28,17 +28,17 @@ from redeemer import redeem_all
 
 # ── Strategy Parameters ──────────────────────────────────────────────
 WINDOW_SECS = 900              # 15 minutes
-DUMP_THRESHOLD = 0.12          # 12% price drop = dump detected
-DUMP_LOOKBACK_SECS = 10        # compare current ask vs ask N seconds ago
-DUMP_WINDOW_SECS = 480         # only look for dumps in first 8 min of window
+DUMP_THRESHOLD = 0.15          # 15% price drop = dump detected (ref: 0.15)
+DUMP_LOOKBACK_SECS = 3         # compare current ask vs ask 3 seconds ago (ref: 3)
+DUMP_WINDOW_SECS = 120         # only look for dumps in first 2 min of window (ref: 2 min)
 SUM_TARGET = 0.95              # hedge when leg1_avg + opposite_ask ≤ this
-MAX_HEDGE_WAIT_SECS = 180      # if no hedge in 3 min after leg1 → forced hedge
+MAX_HEDGE_WAIT_SECS = 300      # if no hedge in 5 min after leg1 → forced hedge (ref: 5 min)
 SHARES_PER_LEG = 6             # shares to buy per leg
 MAX_BUY_PRICE = 0.53           # never pay more than this for any leg
 MIN_DUMP_ASK = 0.05            # don't buy if ask is too low (already near resolution)
 BALANCE_RESERVE = 1.0          # keep $1 reserve
-STOP_BUY_SECS = 600            # no new entries after 10 min into window
-POLL_INTERVAL = 2.0            # seconds between each step
+STOP_BUY_SECS = 600            # no new DUMP entries after 10 min into window
+POLL_INTERVAL = 1.0            # seconds between each step (ref: 1s)
 ORDER_POLL_TIMEOUT = 15        # seconds to wait for order fill
 ORDER_POLL_INTERVAL = 2        # seconds between fill checks
 
@@ -204,24 +204,30 @@ class DumpHedge:
     # ── Dump Detection ───────────────────────────────────────────────
 
     def _detect_dump(self, up_ask: float, down_ask: float) -> str | None:
-        """Return 'UP' or 'DOWN' if a dump is detected on that side, else None."""
+        """Return 'UP' or 'DOWN' if a dump is detected on that side, else None.
+
+        Reference implementation (dev-protocol):
+        - Compare current price vs price 3 seconds ago
+        - Time diff must be 1-5 seconds
+        - Drop must be >= DUMP_THRESHOLD (15%)
+        """
         now = time.time()
         s = self.state
         s.up_history.add(now, up_ask)
         s.down_history.add(now, down_ask)
 
-        # Only detect dumps in the first DUMP_WINDOW_SECS
+        # Only detect dumps in the first DUMP_WINDOW_SECS (2 min)
         if self._secs_into_window() > DUMP_WINDOW_SECS:
             return None
 
-        # Check UP dump: UP ask dropped significantly
+        # Check UP dump
         up_prev = s.up_history.get_ask_at(now, DUMP_LOOKBACK_SECS)
         if up_prev and up_prev > 0.10:
             up_drop = (up_prev - up_ask) / up_prev
             if up_drop >= DUMP_THRESHOLD and up_ask >= MIN_DUMP_ASK and up_ask <= MAX_BUY_PRICE:
                 return "UP"
 
-        # Check DOWN dump: DOWN ask dropped significantly
+        # Check DOWN dump
         dn_prev = s.down_history.get_ask_at(now, DUMP_LOOKBACK_SECS)
         if dn_prev and dn_prev > 0.10:
             dn_drop = (dn_prev - down_ask) / dn_prev
@@ -324,8 +330,12 @@ class DumpHedge:
             forced = False
 
             # Stop-loss: force hedge if waiting too long
+            # NO time-in-window restriction — always hedge to avoid full loss
             if not hedge_ready and (time.time() - s.leg1_time) > MAX_HEDGE_WAIT_SECS:
-                if opposite_ask <= MAX_BUY_PRICE and secs_in <= STOP_BUY_SECS:
+                if opposite_ask <= MAX_BUY_PRICE:
+                    hedge_ready = True
+                    forced = True
+                elif opposite_ask <= 0.60:  # even above MAX_BUY_PRICE, hedge up to $0.60
                     hedge_ready = True
                     forced = True
 
