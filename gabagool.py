@@ -198,9 +198,10 @@ class Gabagool:
         if leg.last_buy_ts > 0 and (time.time() - leg.last_buy_ts) < DCA_COOLDOWN_SECS:
             return False
 
-        # FIX 4: Don't buy more than other_leg.buy_count + 1
-        # Prevents excess shares that create directional risk
-        if leg.buy_count > 0 and leg.buy_count > other_leg.buy_count + 1:
+        # FIX 4: Strict equal legs — never buy more than other side
+        # 2x UP + 1x DOWN = 6 excess shares = directional risk that kills profit
+        # First buy (buy_count=0) always allowed, DCA only if other side caught up
+        if leg.buy_count > 0 and leg.buy_count >= other_leg.buy_count + 1:
             return False
 
         # FIX 3: Don't buy if other side is too expensive to ever form a pair
